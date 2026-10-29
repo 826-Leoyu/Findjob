@@ -2,7 +2,7 @@
 name: ai-junior-dev
 enabled: true
 
-# 搜索词：逐个提交给各数据源；粗筛时按 JD 中命中的数量给粗分。
+# 搜索词：逐个提交给各数据源；粗筛时每个词命中职位名计 2 分、只在 JD 中命中计 1 分。
 # 带 AI 字样的职位名很少，所以也包含通用初级开发职位，靠 AI 相关词提高粗分。
 keywords:
   - junior software developer
@@ -22,7 +22,7 @@ keywords:
   - React
   - TypeScript
 
-# 职位名或 JD 命中任一即过滤（不区分大小写）。
+# 只对原始职位名判断：整词命中即过滤（不区分大小写，带标点的词如 sr. 按原样匹配）；JD 中出现不过滤。
 exclude:
   - senior
   - sr.
