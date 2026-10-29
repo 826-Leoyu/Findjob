@@ -94,6 +94,11 @@ class ScreenPendingTest(unittest.TestCase):
     def job_row(self, job_id: int):
         return self.conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
 
+    def history(self, job_id: int) -> list[tuple]:
+        rows = self.conn.execute(
+            "SELECT status, note FROM status_history WHERE job_id = ? ORDER BY id", (job_id,)).fetchall()
+        return [tuple(r) for r in rows]
+
     def test_excluded_job_is_skipped_with_history(self):
         job_id = self.add("1", "Senior Python Developer")
         screen_pending(self.conn, self.profiles)
@@ -116,8 +121,8 @@ class ScreenPendingTest(unittest.TestCase):
     def test_second_run_does_not_reprocess(self):
         self.add("1", "Senior Python Developer")
         self.add("2", "Junior Developer")
-        self.assertEqual(len(screen_pending(self.conn, self.profiles)), 2)
-        self.assertEqual(screen_pending(self.conn, self.profiles), [])
+        self.assertEqual(len(screen_pending(self.conn, self.profiles).results), 2)
+        self.assertEqual(screen_pending(self.conn, self.profiles).results, [])
 
     def test_uses_profile_recorded_on_job(self):
         other = PROFILE | {"name": "other", "keywords": ["Excel"], "exclude": []}
@@ -131,8 +136,8 @@ class ScreenPendingTest(unittest.TestCase):
         self.add("11", "Python Developer")
         self.add("12", "Senior Python Developer")
         self.add("13", "Sr. Developer")
-        results = screen_pending(self.conn, self.profiles)
-        path = write_report(results, self.tmp / "reports", datetime.date(2026, 10, 29))
+        run = screen_pending(self.conn, self.profiles)
+        path = write_report(run.results, self.tmp / "reports", datetime.date(2026, 10, 29))
         self.assertEqual(path, self.tmp / "reports" / "2026-10-29.md")
         text = path.read_text(encoding="utf-8")
         self.assertIn("Junior Developer", text)
@@ -149,10 +154,60 @@ class ScreenPendingTest(unittest.TestCase):
     def test_same_day_report_is_overwritten(self):
         self.add("10", "Junior Developer")
         day = datetime.date(2026, 10, 29)
-        write_report(screen_pending(self.conn, self.profiles), self.tmp / "reports", day)
-        path = write_report(screen_pending(self.conn, self.profiles), self.tmp / "reports", day)
+        write_report(screen_pending(self.conn, self.profiles).results, self.tmp / "reports", day)
+        path = write_report(screen_pending(self.conn, self.profiles).results, self.tmp / "reports", day)
         self.assertNotIn("Junior Developer", path.read_text(encoding="utf-8"))
         self.assertIn("处理 0", path.read_text(encoding="utf-8"))
+
+    def test_rescreen_restores_job_kept_by_looser_profile(self):
+        job_id = self.add("20", "Senior Python Developer")
+        screen_pending(self.conn, self.profiles)
+        looser = {"ai-junior-dev": PROFILE | {"exclude": []}}
+        screen_pending(self.conn, looser, rescreen=True)
+        self.assertEqual(self.job_row(job_id)["status"], "new")
+        self.assertEqual(self.history(job_id)[-1][0], "new")
+        self.assertEqual(len(self.history(job_id)), 3)
+
+    def test_rescreen_skips_job_excluded_by_stricter_profile(self):
+        job_id = self.add("21", "Python Developer")
+        screen_pending(self.conn, self.profiles)
+        stricter = {"ai-junior-dev": PROFILE | {"exclude": ["python"]}}
+        screen_pending(self.conn, stricter, rescreen=True)
+        self.assertEqual(self.job_row(job_id)["status"], "skipped")
+        self.assertEqual(self.history(job_id)[-1], ("skipped", "exclude: python"))
+
+    def test_rescreen_unchanged_job_updates_score_without_history(self):
+        job_id = self.add("22", "Python Developer", "React")
+        screen_pending(self.conn, self.profiles)
+        rescored = {"ai-junior-dev": PROFILE | {"keywords": ["Python"]}}
+        screen_pending(self.conn, rescored, rescreen=True)
+        row = self.job_row(job_id)
+        self.assertEqual((row["status"], row["coarse_score"]), ("new", 2))
+        self.assertEqual(self.history(job_id), [("new", None)])
+
+    def test_rescreen_leaves_other_statuses_alone(self):
+        job_id = self.add("23", "Senior Python Developer")
+        self.conn.execute("UPDATE jobs SET status = 'scored' WHERE id = ?", (job_id,))
+        run = screen_pending(self.conn, self.profiles, rescreen=True)
+        self.assertEqual(run.results, [])
+        row = self.job_row(job_id)
+        self.assertEqual((row["status"], row["coarse_score"]), ("scored", None))
+
+    def test_only_given_profile_is_processed(self):
+        other = PROFILE | {"name": "other"}
+        mine = self.add("24", "Python Developer")
+        theirs = self.add("25", "Python Developer II", profile="other")
+        run = screen_pending(self.conn, self.profiles | {"other": other}, only_profile="other")
+        self.assertEqual([job["id"] for job, _ in run.results], [theirs])
+        self.assertIsNone(self.job_row(mine)["coarse_score"])
+
+    def test_job_whose_profile_is_unavailable_is_skipped_and_counted(self):
+        job_id = self.add("26", "Python Developer", profile="retired")
+        self.add("27", "Python Developer II", profile="retired")
+        run = screen_pending(self.conn, self.profiles)
+        self.assertEqual(run.results, [])
+        self.assertEqual(run.unmatched, {"retired": 2})
+        self.assertIsNone(self.job_row(job_id)["coarse_score"])
 
 
 if __name__ == "__main__":

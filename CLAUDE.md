@@ -13,7 +13,7 @@
 - `python3 -m findjob init-db` — 创建 / 升级 SQLite（`data/findjob.db`）
 - `python3 -m findjob check-master` — 校验母版结构与 id 唯一性
 - `python3 -m findjob check-profiles` — 校验 `profiles/*.yaml` 搜索配置（字段见 SPEC §3）
-- `python3 -m findjob screen` — 粗筛待筛选职位（排除词 + 粗分）并写回库里，生成日报 `output/reports/YYYY-MM-DD.md`
+- `python3 -m findjob screen [--rescreen] [--profile NAME]` — 粗筛待筛选职位（排除词 + 粗分）并写回库里，生成日报 `output/reports/YYYY-MM-DD.md`；改了配置后用 `--rescreen` 重新筛选全部 new / skipped 职位
 - `python3 -m findjob render [data.yaml] [-o out.pdf] [--png]` — 用 `templates/resume.typ` 渲染简历（需要 `typst`；`--png` 输出逐页预览，便于和原版对比）
 
 修改 `resume/master.yaml` 后必须运行 `check-master`；修改 `profiles/` 后运行 `check-profiles`。

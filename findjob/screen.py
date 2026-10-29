@@ -3,6 +3,7 @@
 import json
 import re
 import sqlite3
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -39,18 +40,31 @@ def screen(job: Mapping, profile: Mapping) -> Verdict:
     return Verdict(keep=True, reason=None, coarse_score=score)
 
 
+@dataclass
+class ScreenRun:
+    results: list[tuple[sqlite3.Row, Verdict]]
+    unmatched: Counter = field(default_factory=Counter)  # 配置不可用而跳过的职位数，按配置名
+
+
 def screen_pending(conn: sqlite3.Connection, profiles: Mapping[str, Mapping],
-                   log=print) -> list[tuple[sqlite3.Row, Verdict]]:
-    """筛选所有 status = 'new' 且尚无粗分的职位，结果写回库里。profiles 按 name 索引。"""
-    rows = conn.execute(
-        "SELECT * FROM jobs WHERE status = 'new' AND coarse_score IS NULL ORDER BY id").fetchall()
-    results = []
-    missing: set[str] = set()
+                   rescreen: bool = False, only_profile: str | None = None) -> ScreenRun:
+    """筛选待筛选的职位（status = 'new' 且尚无粗分），结果写回库里。
+
+    profiles 是可用的配置，按 name 索引；职位记录的配置不在其中时跳过。
+    rescreen 时重新筛选全部 new 与 skipped 职位，状态变化各记一条 status_history。
+    """
+    where = "status IN ('new', 'skipped')" if rescreen else "status = 'new' AND coarse_score IS NULL"
+    params: tuple = ()
+    if only_profile is not None:
+        where += " AND profile = ?"
+        params = (only_profile,)
+    rows = conn.execute(f"SELECT * FROM jobs WHERE {where} ORDER BY id", params).fetchall()
+    run = ScreenRun(results=[])
     with conn:
         for row in rows:
             profile = profiles.get(row["profile"])
             if profile is None:
-                missing.add(row["profile"])
+                run.unmatched[row["profile"]] += 1
                 continue
             verdict = screen(row, profile)
             status = "new" if verdict.keep else "skipped"
@@ -59,10 +73,9 @@ def screen_pending(conn: sqlite3.Connection, profiles: Mapping[str, Mapping],
                    WHERE id = ?""",
                 (status, verdict.coarse_score, json.dumps(verdict.flags), row["id"]),
             )
-            if not verdict.keep:
-                conn.execute("INSERT INTO status_history (job_id, status, note) VALUES (?, 'skipped', ?)",
-                             (row["id"], verdict.reason))
-            results.append((row, verdict))
-    for name in sorted(missing, key=str):
-        log(f"[screen] 找不到配置 {name!r}，相关职位留待下次")
-    return results
+            if status != row["status"]:
+                note = verdict.reason if status == "skipped" else "重新筛选后保留"
+                conn.execute("INSERT INTO status_history (job_id, status, note) VALUES (?, ?, ?)",
+                             (row["id"], status, note))
+            run.results.append((row, verdict))
+    return run
