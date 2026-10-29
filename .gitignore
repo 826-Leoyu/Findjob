@@ -1,0 +1,12 @@
+# 个人数据
+resume/*.pdf
+resume/master.yaml
+output/
+data/
+answers.yaml
+*.db
+.env
+
+# Python
+__pycache__/
+.venv/

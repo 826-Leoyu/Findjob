@@ -1,0 +1,46 @@
+# 安大略省内，利用 AI 编程的初级开发岗位；接受远程。
+name: ai-junior-dev
+enabled: true
+
+# 搜索词：逐个提交给各数据源；粗筛时按 JD 中命中的数量给粗分。
+# 带 AI 字样的职位名很少，所以也包含通用初级开发职位，靠 AI 相关词提高粗分。
+keywords:
+  - junior software developer
+  - junior software engineer
+  - junior developer
+  - entry level developer
+  - new grad software engineer
+  - AI developer
+  - AI engineer
+  - LLM
+  - generative AI
+  - AI-assisted development
+  - Claude
+  - prompt engineering
+  - Python developer
+  - full stack developer
+  - React
+  - TypeScript
+
+# 职位名或 JD 命中任一即过滤（不区分大小写）。
+exclude:
+  - senior
+  - sr.
+  - lead
+  - principal
+  - staff engineer
+  - manager
+  - director
+  - architect
+  - sales
+  - security clearance
+
+# 城市（"Windsor, ON"，按 50 km 半径搜）或省份（"Ontario" / "ON"，搜全省）。
+locations:
+  - Ontario
+
+remote: true            # 接受远程岗位（限加拿大境内可远程的岗位）
+max_experience_years: 2 # JD 要求的年限超过此值即过滤
+
+# 可选：Greenhouse / Lever / Ashby 公司标识，第 10 步启用。
+ats_companies: []
