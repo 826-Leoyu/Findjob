@@ -6,12 +6,13 @@ from pathlib import Path
 
 from findjob import db, store
 from findjob.report import write_report
-from findjob.screen import screen, screen_pending
+from findjob.screen import required_experience, screen, screen_pending
 
 PROFILE = {
     "name": "ai-junior-dev",
     "keywords": ["junior developer", "Python", "React", "LLM"],
     "exclude": ["senior", "sr.", "lead", "staff engineer"],
+    "max_experience_years": 2,
 }
 
 
@@ -45,6 +46,81 @@ class ExcludeTest(unittest.TestCase):
         verdict = screen(job("Senior Python Developer", "React"), PROFILE)
         self.assertFalse(verdict.keep)
         self.assertEqual(verdict.coarse_score, 3)
+
+
+class ExperienceTest(unittest.TestCase):
+    """文本取自真实 JD 片段（Job Bank 描述已压平为一段）。"""
+
+    def verdict(self, description: str):
+        return screen(job("Software Developer", description), PROFILE)
+
+    def test_jobbank_line_above_limit_is_skipped(self):
+        verdict = self.verdict("Experience: 3 years to less than 5 years. Employment terms options: Day.")
+        self.assertFalse(verdict.keep)
+        self.assertEqual(verdict.reason, "experience: 3")
+
+    def test_jobbank_line_at_limit_is_kept(self):
+        self.assertTrue(self.verdict("Experience: 2 years to less than 3 years. Health benefits: Dental plan.").keep)
+
+    def test_jobbank_five_years_or_more_is_skipped(self):
+        self.assertEqual(self.verdict("Education: Earned doctorate degree. Experience: 5 years or more.").reason,
+                         "experience: 5")
+
+    def test_jobbank_no_experience_values_are_kept(self):
+        self.assertTrue(self.verdict("Experience: No experience (will train). Employment terms options: Day.").keep)
+        self.assertTrue(self.verdict("Experience: Experience an asset. Workplace information: Hybrid.").keep)
+
+    def test_every_jobbank_value_maps_to_its_lower_bound(self):
+        cases = {
+            "No experience (will train)": 0, "Experience an asset": 0,
+            "1 to less than 7 months": 0, "7 months to less than 1 year": 0,
+            "1 year to less than 2 years": 1, "2 years to less than 3 years": 2,
+            "3 years to less than 5 years": 3, "5 years or more": 5, "Ten or more years": 10,
+        }
+        for value, years in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(required_experience(f"Experience: {value}."), years)
+
+    def test_free_text_n_plus_years(self):
+        verdict = self.verdict("We are seeking a skilled Full Stack Software Developer with "
+                               "5+ years of professional experience to design, develop, and maintain robust")
+        self.assertFalse(verdict.keep)
+        self.assertEqual(verdict.reason, "experience: 5")
+
+    def test_free_text_n_years_or_more(self):
+        self.assertEqual(self.verdict("Required Skills: Several years of software engineering experience "
+                                      "(3 years or more).").reason, "experience: 3")
+
+    def test_free_text_range_uses_lower_bound(self):
+        self.assertEqual(self.verdict("• 3-5 years of experience with designing and implementing large "
+                                      "enterprise networks.").reason, "experience: 3")
+        self.assertTrue(self.verdict("Requirements * 1-2 years media coordinating experience in Agency "
+                                     "or Client environment.").keep)
+
+    def test_free_text_minimum_of_n_years(self):
+        self.assertEqual(self.verdict("Minimum of 3 years of experience in Salesforce development toolset.").reason,
+                         "experience: 3")
+
+    def test_free_text_years_without_experience_word_nearby_is_ignored(self):
+        self.assertTrue(self.verdict("It represents a multi-trillion-dollar market and a 20+ year megatrend "
+                                     "in North America.").keep)
+
+    def test_company_history_is_not_a_requirement(self):
+        self.assertTrue(self.verdict("MenRes draws on over 70 years of combined property management and "
+                                     "construction experience").keep)
+
+    def test_experience_label_followed_by_skill_is_ignored(self):
+        self.assertTrue(self.verdict("Equipment and machinery experience: Forklift").keep)
+
+    def test_largest_requirement_wins(self):
+        verdict = self.verdict("8+ years of professional experience in similar positions in an enterprise / "
+                               "commercial environment. Deep understanding and 6+ years of practical experience "
+                               "with tools, methodologies, and frameworks.")
+        self.assertEqual(verdict.reason, "experience: 8")
+
+    def test_exclude_reason_takes_precedence(self):
+        verdict = screen(job("Senior Developer", "Experience: 5 years or more."), PROFILE)
+        self.assertEqual(verdict.reason, "exclude: senior")
 
 
 class CoarseScoreTest(unittest.TestCase):
@@ -150,6 +226,14 @@ class ScreenPendingTest(unittest.TestCase):
         self.assertIn("保留 2", text)
         self.assertIn("exclude: senior：1", text)
         self.assertIn("exclude: sr.：1", text)
+
+    def test_daily_report_counts_experience_filter(self):
+        self.add("14", "Python Developer", "Experience: 5 years or more. Employment terms options: Day.")
+        self.add("15", "Python Developer II", "Experience: 2 years to less than 3 years.")
+        run = screen_pending(self.conn, self.profiles)
+        text = write_report(run.results, self.tmp / "reports", datetime.date(2026, 10, 30)).read_text(encoding="utf-8")
+        self.assertIn("保留 1", text)
+        self.assertIn("experience: 5：1", text)
 
     def test_same_day_report_is_overwritten(self):
         self.add("10", "Junior Developer")

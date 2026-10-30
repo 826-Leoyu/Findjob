@@ -1,4 +1,4 @@
-"""粗筛：按配置的排除词过滤、按关键词给粗分。无 LLM、不联网。"""
+"""粗筛：按配置的排除词与经验年限上限过滤、按关键词给粗分。无 LLM、不联网。"""
 
 import json
 import re
@@ -22,6 +22,47 @@ def _contains(text: str, phrase: str) -> bool:
     return re.search(rf"(?<!\w){pattern}(?!\w)", text, re.IGNORECASE) is not None
 
 
+# Job Bank 标准行 "Experience: <X>" 的枚举值 → 要求的最少年数
+JOBBANK_EXPERIENCE = {
+    "no experience (will train)": 0,
+    "experience an asset": 0,
+    "1 to less than 7 months": 0,
+    "7 months to less than 1 year": 0,
+    "1 year to less than 2 years": 1,
+    "2 years to less than 3 years": 2,
+    "3 years to less than 5 years": 3,
+    "5 years or more": 5,
+    "ten or more years": 10,
+}
+JOBBANK_LINE_RE = re.compile(
+    r"\bExperience:\s*(" + "|".join(re.escape(v) for v in JOBBANK_EXPERIENCE) + ")",
+    re.IGNORECASE)
+# 自由文本里的年限写法，第 1 组是要求的最少年数
+FREE_TEXT_YEARS_RES = [re.compile(p, re.IGNORECASE) for p in (
+    r"\b(\d{1,2})\s*\+\s*years?\b",              # 5+ years
+    r"\b(\d{1,2})\s+years?\s+or\s+more\b",          # 3 years or more
+    r"\b(\d{1,2})\s*[-–]\s*\d{1,2}\s+years?\b",     # 3-5 years（取下限）
+    r"\bminimum\s+of\s+(\d{1,2})\s+years?\b",       # minimum of 3 years
+)]
+EXPERIENCE_WORD_RE = re.compile(r"\b(experienc\w*|professional)\b", re.IGNORECASE)
+EXPERIENCE_WINDOW_BEFORE, EXPERIENCE_WINDOW_AFTER = 40, 80  # 年限前后多少个字符内须出现 experience / professional
+
+
+def _near_experience_word(text: str, match: re.Match) -> bool:
+    window = text[max(0, match.start() - EXPERIENCE_WINDOW_BEFORE):match.end() + EXPERIENCE_WINDOW_AFTER]
+    return EXPERIENCE_WORD_RE.search(window) is not None
+
+
+def required_experience(description: str) -> int | None:
+    """JD 要求的最少经验年数；没有可识别的年限时为 None。"""
+    years = [JOBBANK_EXPERIENCE[m.group(1).lower()] for m in JOBBANK_LINE_RE.finditer(description)]
+    for pattern in FREE_TEXT_YEARS_RES:
+        for m in pattern.finditer(description):
+            if _near_experience_word(description, m):
+                years.append(int(m.group(1)))
+    return max(years, default=None)
+
+
 def screen(job: Mapping, profile: Mapping) -> Verdict:
     """job 需含 title（原始职位名）与 description。"""
     title = job["title"] or ""
@@ -37,6 +78,9 @@ def screen(job: Mapping, profile: Mapping) -> Verdict:
     for word in profile["exclude"]:
         if _contains(title, word):
             return Verdict(keep=False, reason=f"exclude: {word}", coarse_score=score)
+    years = required_experience(description)
+    if years is not None and years > profile["max_experience_years"]:
+        return Verdict(keep=False, reason=f"experience: {years}", coarse_score=score)
     return Verdict(keep=True, reason=None, coarse_score=score)
 
 
