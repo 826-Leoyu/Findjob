@@ -13,11 +13,13 @@ PROFILE = {
     "keywords": ["junior developer", "Python", "React", "LLM"],
     "exclude": ["senior", "sr.", "lead", "staff engineer"],
     "max_experience_years": 2,
+    "locations": ["Ontario"],
+    "remote": True,
 }
 
 
-def job(title: str, description: str = "") -> dict:
-    return {"title": title, "description": description}
+def job(title: str, description: str | None = "", location: str = "Toronto, ON", remote: int | None = None) -> dict:
+    return {"title": title, "description": description, "location": location, "remote": remote}
 
 
 class ExcludeTest(unittest.TestCase):
@@ -142,7 +144,75 @@ class CoarseScoreTest(unittest.TestCase):
         self.assertEqual(verdict.flags, [])
 
     def test_missing_description(self):
-        self.assertEqual(screen({"title": "Python Developer", "description": None}, PROFILE).coarse_score, 2)
+        self.assertEqual(screen(job("Python Developer", None), PROFILE).coarse_score, 2)
+
+
+CITIES = ["Windsor, ON", "Toronto, ON"]
+
+
+class LocationTest(unittest.TestCase):
+    def verdict(self, location: str, remote: int | None = None, title: str = "Software Developer",
+                description: str = "", remote_profile: bool = True, **profile):
+        return screen(job(title, description, location, remote), PROFILE | {"remote": remote_profile} | profile)
+
+    def test_province_profile_keeps_cities_in_that_province(self):
+        for location in ("Hamilton, ON", "Ottawa, ON", "Toronto, ON"):
+            with self.subTest(location=location):
+                self.assertTrue(self.verdict(location).keep)
+
+    def test_province_profile_skips_out_of_province_onsite_job(self):
+        verdict = self.verdict("Montreal, QC", remote=0)
+        self.assertFalse(verdict.keep)
+        self.assertEqual(verdict.reason, "location: Montreal")
+
+    def test_city_profile_keeps_configured_cities(self):
+        for location in ("Windsor, ON", "toronto, on"):
+            with self.subTest(location=location):
+                self.assertTrue(self.verdict(location, locations=CITIES).keep)
+
+    def test_city_profile_skips_other_cities(self):
+        for location, city in (("Hamilton, ON", "Hamilton"), ("Leamington, ON", "Leamington")):
+            with self.subTest(location=location):
+                verdict = self.verdict(location, remote=0, locations=CITIES)
+                self.assertFalse(verdict.keep)
+                self.assertEqual(verdict.reason, f"location: {city}")
+
+    def test_toronto_boroughs_count_as_toronto(self):
+        for borough in ("North York", "Scarborough", "Etobicoke", "East York", "York"):
+            with self.subTest(borough=borough):
+                self.assertTrue(self.verdict(f"{borough}, ON", locations=CITIES).keep)
+
+    def test_remote_job_elsewhere_is_kept_when_profile_accepts_remote(self):
+        self.assertTrue(self.verdict("Halifax, NS", remote=1).keep)
+
+    def test_remote_job_elsewhere_is_skipped_when_profile_rejects_remote(self):
+        verdict = self.verdict("Halifax, NS", remote=1, remote_profile=False)
+        self.assertFalse(verdict.keep)
+        self.assertEqual(verdict.reason, "location: Halifax")
+
+    def test_explicit_remote_wording_counts_as_remote_when_field_is_empty(self):
+        cases = [
+            dict(title="Junior Developer - Fully Remote"),
+            dict(description="This is a 100% remote role open to candidates across Canada."),
+            dict(description="This is a remote position."),
+        ]
+        for case in cases:
+            with self.subTest(**case):
+                self.assertTrue(self.verdict("Montréal, QC", **case).keep)
+
+    def test_remote_wording_is_ignored_when_field_says_not_remote(self):
+        self.assertFalse(self.verdict("Montréal, QC", remote=0, title="Fully Remote Developer").keep)
+
+    def test_vague_remote_mention_does_not_count(self):
+        verdict = self.verdict("Montréal, QC", description="Hybrid: 3 days in office, some remote work.")
+        self.assertEqual(verdict.reason, "location: Montréal")
+
+    def test_unknown_location_is_kept_and_flagged(self):
+        for location in ("Various locations", "", None, "Somewhere, XX"):
+            with self.subTest(location=location):
+                verdict = self.verdict(location, remote=0, locations=CITIES)
+                self.assertTrue(verdict.keep)
+                self.assertEqual(verdict.flags, ["location_unknown"])
 
 
 class ScreenPendingTest(unittest.TestCase):
@@ -284,6 +354,24 @@ class ScreenPendingTest(unittest.TestCase):
         run = screen_pending(self.conn, self.profiles | {"other": other}, only_profile="other")
         self.assertEqual([job["id"] for job, _ in run.results], [theirs])
         self.assertIsNone(self.job_row(mine)["coarse_score"])
+
+    def test_location_filter_end_to_end(self):
+        hamilton = self.add("30", "Python Developer", location="Hamilton, ON", remote=None)
+        inferred = self.add("31", "Python Developer - Fully Remote", location="Halifax, NS", remote=None)
+        various = self.add("32", "Junior Developer", location="Various locations")
+        self.add("33", "Python Developer II", location="Montréal, QC")
+        profiles = {"ai-junior-dev": PROFILE | {"locations": CITIES}}
+        run = screen_pending(self.conn, profiles)
+        self.assertEqual(self.job_row(hamilton)["status"], "skipped")
+        self.assertEqual(self.history(hamilton)[-1], ("skipped", "location: Hamilton"))
+        self.assertEqual(self.job_row(inferred)["status"], "new")
+        self.assertIsNone(self.job_row(inferred)["remote"])
+        self.assertEqual(json.loads(self.job_row(various)["flags"]), ["location_unknown"])
+        text = write_report(run.results, self.tmp / "reports", datetime.date(2026, 10, 30)).read_text(encoding="utf-8")
+        self.assertNotIn("Hamilton", text.partition("## 统计")[0])
+        self.assertIn("标记 location_unknown", text)
+        self.assertIn("location: Hamilton：1", text)
+        self.assertIn("location: Montréal：1", text)
 
     def test_job_whose_profile_is_unavailable_is_skipped_and_counted(self):
         job_id = self.add("26", "Python Developer", profile="retired")
