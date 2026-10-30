@@ -37,6 +37,7 @@
 1. **粗筛（Python，定时，无 LLM）**：按关键词/排除词/地点/经验年限过滤，按关键词重合度给粗分。
    - 要求 security clearance → 直接过滤。
    - 要求 PR / citizen → 保留但标红。
+   - 地点：配置接受远程时，远程职位（`remote` 为 1，或为空但职位名 / JD 明确写了远程）不论地点保留；地点无法解析（如 "Various locations"）保留并标 `location_unknown`。
 2. **精评（Claude，在 `/jobs` 内）**：对粗分 Top N（默认 15）对比 JD 与母版，输出 0–100 匹配分、匹配点、缺口、风险提示。
 
 ## 6. 简历

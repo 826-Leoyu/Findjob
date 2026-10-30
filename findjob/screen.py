@@ -7,6 +7,8 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from .jobbank import PROVINCES, split_locations
+
 
 @dataclass
 class Verdict:
@@ -63,8 +65,42 @@ def required_experience(description: str) -> int | None:
     return max(years, default=None)
 
 
+# 多伦多的行政区 → Toronto（小写）
+CITY_ALIASES = {borough: "toronto" for borough in ("north york", "scarborough", "etobicoke", "east york", "york")}
+
+
+def _city_key(location: str) -> str:
+    city = location.partition(",")[0].strip().lower()
+    return CITY_ALIASES.get(city, city)
+
+
+# remote 字段为空时，职位名或 JD 中出现这些表述即视为远程
+REMOTE_PHRASES = ("fully remote", "100% remote", "remote position", "remote role")
+
+
+def _is_remote(remote: int | None, title: str, description: str) -> bool:
+    """remote 字段为 1，或为空但有明确的远程表述。补判结果不回写。"""
+    if remote is not None:
+        return bool(remote)
+    return any(_contains(text, phrase) for phrase in REMOTE_PHRASES for text in (title, description))
+
+
+def _check_location(job: Mapping, profile: Mapping, remote: bool) -> tuple[str | None, list[str]]:
+    """返回（过滤原因，标记）；地点符合时原因为 None。"""
+    if remote and profile["remote"]:
+        return None, []
+    location = job["location"] or ""
+    city, _, province = (part.strip() for part in location.partition(","))
+    if not city or province.upper() not in PROVINCES:  # "Various locations" 等无法解析的地点
+        return None, ["location_unknown"]
+    provinces, cities = split_locations(profile["locations"])
+    if province.upper() in provinces or _city_key(location) in {_city_key(c) for c in cities}:
+        return None, []
+    return f"location: {city}", []
+
+
 def screen(job: Mapping, profile: Mapping) -> Verdict:
-    """job 需含 title（原始职位名）与 description。"""
+    """job 需含 title（原始职位名）、description、location 与 remote。"""
     title = job["title"] or ""
     description = job["description"] or ""
 
@@ -81,7 +117,10 @@ def screen(job: Mapping, profile: Mapping) -> Verdict:
     years = required_experience(description)
     if years is not None and years > profile["max_experience_years"]:
         return Verdict(keep=False, reason=f"experience: {years}", coarse_score=score)
-    return Verdict(keep=True, reason=None, coarse_score=score)
+    reason, flags = _check_location(job, profile, _is_remote(job["remote"], title, description))
+    if reason is not None:
+        return Verdict(keep=False, reason=reason, coarse_score=score)
+    return Verdict(keep=True, reason=None, coarse_score=score, flags=flags)
 
 
 @dataclass
